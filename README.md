@@ -9,6 +9,12 @@ without the resources. `nix` satisfies a lot of this however it is an incredibly
 complex tool that is not always easy to setup. It also does not provide an easy
 way to run multiple processes at the same time, like foreman.
 
+- [Requirements](#requirements)
+- [Usage](#usage)
+- [Demos](#demos)
+- [grind.yml Spec](#grindyml-spec-definition)
+- [FAQ](#faq)
+
 ### Requirements
 `grind` requires a few things to run properly.
 
@@ -39,7 +45,16 @@ Flags:
   -d, --root string   Specify an alternate application root. (default "/Users/timanema/workspace/tubes.dev")
 ```
 
-### grind.yml Spec.
+### Demos
+Using an isolated version of Go for this project only:
+
+https://user-images.githubusercontent.com/463193/227263067-f5130080-f39d-44a9-b9a4-bb642a92fc00.mov
+
+Using `grind` to run multiple services with many dependencies:
+
+https://user-images.githubusercontent.com/463193/227267280-5a168169-7321-4572-9980-59716d6e332a.mov
+
+### grind.yml Spec Definition.
 Each grind project contains a grind.yaml file to specify requirments, services,
 and tasks. An spec for a project that has a go backend and a webpack built  front-end
 would look something like this.
