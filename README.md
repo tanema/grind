@@ -58,10 +58,10 @@ env:
   PORT: 8080
 
 # Dependency requirments, satisfied by nix.
-# This will get updated with installed attribute names to pin them to.
-requires:
-  - nodejs
-  - go
+# Search for packages with https://search.nixos.org/packages
+nixpkgs:
+  - nodejs-18_x
+  - go_1_20
 
 # Services are the services run when running the application with `grind run`
 services:
@@ -88,7 +88,7 @@ services:
 
 # tasks are makefile like tasks, run in each service's context
 tasks:
-  deploy:
+  deploy: # defined `grind deploy`
     service: server
     cmds:
       - gcloud app deploy app.yml --project=my-project1a

@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v2"
 
@@ -23,14 +22,14 @@ type (
 		FlagEnv     *envfile.Env           `yaml:"-"`
 		Envfiles    []string               `yaml:"envs,omitempty"`
 		Environment map[string]interface{} `yaml:"env,omitempty"`
-		Requires    []*Requirment          `yaml:"requires,omitempty"`
+		Nixpkgs     []string               `yaml:"nixpkgs,omitempty"`
 		Services    map[string]*Service    `yaml:"services,omitempty"`
 		Tasks       map[string]*Service    `yaml:"tasks,omitempty"`
 	}
-	// Requirment captures the required version and the pinned attribute name
-	Requirment struct {
-		Name string
-		Attr string
+	// Requirement describes a dependency's version and pinned attribute
+	Requirement struct {
+		From string `yaml:"from,omitempty"`
+		Attr string `yaml:"attr,omitempty"`
 	}
 	// Service is a single process description
 	Service struct {
@@ -84,15 +83,6 @@ func Parse(dir, filename string, env *envfile.Env) (*Procfile, error) {
 	return procfile, nil
 }
 
-// Save will write out the procfile to save any changes.
-func (pfile *Procfile) Save() error {
-	byteData, err := yaml.Marshal(pfile)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(pfile.Filepath, byteData, pfile.Perms)
-}
-
 // Environ will generate an array of the variables for the procfile for all
 // services and inherits the flag args
 func (pfile *Procfile) Environ() ([]string, error) {
@@ -142,24 +132,4 @@ func (svc *Service) Environ() ([]string, error) {
 		env = append(env, fmt.Sprintf("%v=%v", key, val))
 	}
 	return env, nil
-}
-
-// UnmarshalYAML will unmarshal a complex string into the requirment and the nix
-// attr name saved by previous runs.
-func (req *Requirment) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	fullDesc := ""
-	if err := unmarshal(&fullDesc); err != nil {
-		return err
-	}
-	parts := strings.Split(fullDesc, " = ")
-	req.Name = parts[0]
-	if len(parts) > 1 {
-		req.Attr = parts[1]
-	}
-	return nil
-}
-
-// MarshalYAML will marshal the requirement int a complex string
-func (req *Requirment) MarshalYAML() (interface{}, error) {
-	return fmt.Sprintf("%v = %v", req.Name, req.Attr), nil
 }

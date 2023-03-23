@@ -114,6 +114,15 @@ func (runner *Runner) RunShell() error {
 	return cmdProc.Run()
 }
 
+// RunCommand will run a command within the nix-shell
+func (runner *Runner) RunCommand(cmd string) error {
+	cmdProc := runner.nix.WithShell(runner.ctx, cmd)
+	cmdProc.Stdin = os.Stdin
+	cmdProc.Stdout = os.Stdout
+	cmdProc.Stderr = os.Stderr
+	return cmdProc.Run()
+}
+
 func (runner *Runner) monitorSignals() {
 	runner.sigc = make(chan os.Signal, 1)
 	signal.Notify(runner.sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)

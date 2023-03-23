@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/tanema/gluey"
@@ -51,6 +53,11 @@ Get on your grind, royalty 👑`,
 		Short: "Start up interactive shell with deps.",
 		Run:   shellCmd,
 	}
+	exec = &cobra.Command{
+		Use:   "exec -- [arbitrary shell commands]",
+		Short: "run a command within the environment",
+		Run:   execCmd,
+	}
 )
 
 // Execute is the main app entrypoint
@@ -73,6 +80,7 @@ func init() {
 	run.Flags().StringSliceVarP(&flags.Except, "except", "x", nil, "Specify one or more services to exclude from run: --except server,db.")
 	rootCmd.AddCommand(run)
 	rootCmd.AddCommand(shell)
+	rootCmd.AddCommand(exec)
 
 	env, err = envfile.Parse(flags.Env...)
 	cobra.CheckErr(err)
@@ -107,6 +115,13 @@ func shellCmd(cmd *cobra.Command, args []string) {
 	runner.New(deps, runner.Config{Procfile: pfile}).RunShell()
 }
 
+func execCmd(cmd *cobra.Command, args []string) {
+	deps, err := resolveDeps(pfile)
+	cobra.CheckErr(err)
+	fmt.Println(strings.Join(args, " "))
+	runner.New(deps, runner.Config{Procfile: pfile}).RunCommand(strings.Join(args, " "))
+}
+
 func runTaskCmd(cmd *cobra.Command, args []string) {
 	deps, err := resolveDeps(pfile)
 	cobra.CheckErr(err)
@@ -117,31 +132,29 @@ func resolveDeps(pfile *procfile.Procfile) (*nix.Nix, error) {
 	rnd := gluey.New()
 	deps := nix.New(pfile)
 
-	if !deps.AllSatisfied() {
-		err := rnd.InFrame("📦 Installing Dependencies", func(c *gluey.Ctx, f *gluey.Frame) error {
-			spinGrp := c.NewSpinGroup()
-			for _, dep := range deps.Deps {
-				func(dep *nix.Dependency) {
-					spinGrp.Go(dep.Require.Name, func(spinner *gluey.Spinner) error {
-						return dep.Resolve()
-					})
-				}(dep)
-			}
-			rnd.Debreif(spinGrp.Wait())
-			return nil
-		})
-		if err != nil {
-			return nil, err
+	err := rnd.InFrame("📦 Dependencies", func(c *gluey.Ctx, f *gluey.Frame) error {
+		spinGrp := c.NewSpinGroup()
+		for _, pkg := range pfile.Nixpkgs {
+			func(pkg string) {
+				spinGrp.Go(pkg, func(spinner *gluey.Spinner) error {
+					return deps.Install(pkg)
+				})
+			}(pkg)
 		}
+		errs := spinGrp.Wait()
+		rnd.Debreif(errs)
+		if len(errs) > 0 {
+			return fmt.Errorf("could not install all requested packages")
+		}
+		return nil
+	})
+
+	if err != nil {
+		fmt.Printf(`Error installing packages. Please try searching to ensure you have the correct package name:
+
+https://search.nixos.org/packages
+`)
 	}
 
-	if !deps.AllPinned() {
-		if err := rnd.Spinner("📌 Pinning versions", func(s *gluey.Spinner) error {
-			return deps.Setup()
-		}); err != nil {
-			return nil, err
-		}
-	}
-
-	return deps, nil
+	return deps, err
 }
