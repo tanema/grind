@@ -26,6 +26,7 @@ Usage:
   grind [command]
 
 Available Commands:
+  exec        run a command within the environment
   help        Help about any command
   run         Ensure dependencies are satisfied and start up all specified services.
   shell       Start up interactive shell with deps.
