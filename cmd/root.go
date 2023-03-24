@@ -33,14 +33,7 @@ var (
 	rootCmd = &cobra.Command{
 		Version: "0.0.1",
 		Use:     "grind",
-		Long: `Fast, reproducible, development environment and process manager
-
-- Run multiple processes with a single command.
-- Easily manage dependencies with nix.
-- Defined custom tasks in the context of a service.
-- Run an isolated shell with prerequisites satisfied.
-
-Get on your grind 👑`,
+		Short:   "Get on your grind 👑",
 	}
 	initCmd = &cobra.Command{
 		Use:   "init",
@@ -53,8 +46,8 @@ Get on your grind 👑`,
 		Use:     "run",
 		Short:   "Ensure dependencies are satisfied and start up all specified services.",
 		PreRunE: resolveDeps,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runner.New(deps, pfile).RunServices(flags.Only, flags.Except)
+		Run: func(cmd *cobra.Command, args []string) {
+			runner.New(deps, pfile).RunServices(flags.Only, flags.Except)
 		},
 	}
 	shellCmd = &cobra.Command{

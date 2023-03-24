@@ -121,3 +121,7 @@ tasks:
   kill my battery.
 - *Why tho?*: Because I also wanted to automate some things I use nix for and a
   few other tools all into one.
+
+### WIP
+
+- Call other tasks inside a task or service
