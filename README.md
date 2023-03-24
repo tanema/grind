@@ -121,6 +121,3 @@ tasks:
   kill my battery.
 - *Why tho?*: Because I also wanted to automate some things I use nix for and a
   few other tools all into one.
-
-### Work in progress
-- [ ] bypass nix if no requirements are set.

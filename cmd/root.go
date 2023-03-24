@@ -25,38 +25,76 @@ type Flags struct {
 var (
 	env   *envfile.Env
 	pfile *procfile.Procfile
+	deps  *nix.Nix
 	flags = Flags{
 		File: "grind.yml",
 	}
 
 	rootCmd = &cobra.Command{
-		Use: "grind",
+		Version: "0.0.1",
+		Use:     "grind",
 		Long: `Fast, reproducible, development environment and process manager
 
-grind incororates ideas from procfiles, makefiles, and uses the nix package
-manager to create a development environment that is reproducible and lightweight.
-It was created out of a desire for something with the reproducibility of docker
-without the resources. nix satisfies a lot of this however it is an incredibly
-complex tool that is not always easy to setup. It also does not provide an easy
-way to run multiple processes at the same time, like foreman.
+- Run multiple processes with a single command.
+- Easily manage dependencies with nix.
+- Defined custom tasks in the context of a service.
+- Run an isolated shell with prerequisites satisfied.
 
-Get on your grind, royalty 👑`,
+Get on your grind 👑`,
 	}
-
-	run = &cobra.Command{
-		Use:   "run",
-		Short: "Ensure dependencies are satisfied and start up all specified services.",
-		Run:   runCmd,
+	initCmd = &cobra.Command{
+		Use:   "init",
+		Short: "Initialize a new grind.yml file.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return procfile.Create()
+		},
 	}
-	shell = &cobra.Command{
-		Use:   "shell",
-		Short: "Start up interactive shell with deps.",
-		Run:   shellCmd,
+	runCmd = &cobra.Command{
+		Use:     "run",
+		Short:   "Ensure dependencies are satisfied and start up all specified services.",
+		PreRunE: resolveDeps,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.New(deps, pfile).RunServices(flags.Only, flags.Except)
+		},
 	}
-	exec = &cobra.Command{
-		Use:   "exec -- [arbitrary shell commands]",
-		Short: "run a command within the environment",
-		Run:   execCmd,
+	shellCmd = &cobra.Command{
+		Use:     "shell",
+		Short:   "Start up interactive shell with deps.",
+		PreRunE: resolveDeps,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.New(deps, pfile).RunShell()
+		},
+	}
+	execCmd = &cobra.Command{
+		Use:     "exec -- [arbitrary shell commands]",
+		Short:   "run a command within the environment",
+		PreRunE: resolveDeps,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.New(deps, pfile).RunCommand(strings.Join(args, " "))
+		},
+	}
+	envCmd = &cobra.Command{
+		Use:     "env",
+		Short:   "Output environment variables for different services.",
+		PreRunE: resolveDeps,
+		Hidden:  true,
+		Run: func(cmd *cobra.Command, args []string) {
+			if len(args) == 0 {
+				env, _ := pfile.Environ()
+				fmt.Println(strings.Join(env, "\n"))
+				return
+			}
+			name := args[0]
+			if svc := pfile.Services[name]; svc != nil {
+				env, _ := svc.Environ()
+				fmt.Println(strings.Join(env, "\n"))
+			} else if task := pfile.Tasks[name]; task != nil {
+				env, _ := task.Environ()
+				fmt.Println(strings.Join(env, "\n"))
+			} else {
+				fmt.Printf("Uknown service or task %v", name)
+			}
+		},
 	}
 )
 
@@ -69,6 +107,8 @@ func Execute() {
 
 func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	rootCmd.SetUsageFunc(usage)
+	rootCmd.SetHelpFunc(help)
 
 	pwd, err := os.Getwd()
 	cobra.CheckErr(err)
@@ -76,61 +116,52 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&flags.File, "file", "f", "grind.yml", "Specify an alternate Procfile to load, implies -d as the root.")
 	rootCmd.PersistentFlags().StringSliceVarP(&flags.Env, "env", "e", nil, "Specify one or more .env files to load")
 
-	run.Flags().StringSliceVarP(&flags.Only, "only", "o", nil, "Specify one or more services to run: --only server,db.")
-	run.Flags().StringSliceVarP(&flags.Except, "except", "x", nil, "Specify one or more services to exclude from run: --except server,db.")
-	rootCmd.AddCommand(run)
-	rootCmd.AddCommand(shell)
-	rootCmd.AddCommand(exec)
+	runCmd.Flags().StringSliceVarP(&flags.Only, "only", "o", nil, "Specify one or more services to run: --only server,db.")
+	runCmd.Flags().StringSliceVarP(&flags.Except, "except", "x", nil, "Specify one or more services to exclude from run: --except server,db.")
 
 	env, err = envfile.Parse(flags.Env...)
 	cobra.CheckErr(err)
 
 	pfile, err = procfile.Parse(flags.Dir, flags.File, env)
-	cobra.CheckErr(err)
+	if !os.IsNotExist(err) {
+		cobra.CheckErr(err)
+	}
 
 	if pfile != nil {
-		for name, task := range pfile.Tasks {
-			rootCmd.AddCommand(&cobra.Command{
-				Use:   name,
-				Short: task.Description,
-				Run:   runTaskCmd,
-			})
+		rootCmd.AddCommand(runCmd)
+		rootCmd.AddCommand(envCmd)
+
+		if len(pfile.Nixpkgs) > 0 {
+			rootCmd.AddCommand(shellCmd)
+			rootCmd.AddCommand(execCmd)
 		}
+
+		for name, task := range pfile.Tasks {
+			addTask(name, task.Description)
+		}
+	} else {
+		rootCmd.AddCommand(initCmd)
 	}
 }
 
-func runCmd(cmd *cobra.Command, args []string) {
-	deps, err := resolveDeps(pfile)
-	cobra.CheckErr(err)
-	runner.New(deps, runner.Config{
-		Procfile: pfile,
-		Only:     flags.Only,
-		Except:   flags.Except,
-	}).RunServices()
+func addTask(name, desc string) {
+	rootCmd.AddCommand(&cobra.Command{
+		Use:     name,
+		Short:   desc,
+		PreRunE: resolveDeps,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.New(deps, pfile).RunTask(name)
+		},
+	})
 }
 
-func shellCmd(cmd *cobra.Command, args []string) {
-	deps, err := resolveDeps(pfile)
-	cobra.CheckErr(err)
-	runner.New(deps, runner.Config{Procfile: pfile}).RunShell()
-}
-
-func execCmd(cmd *cobra.Command, args []string) {
-	deps, err := resolveDeps(pfile)
-	cobra.CheckErr(err)
-	fmt.Println(strings.Join(args, " "))
-	runner.New(deps, runner.Config{Procfile: pfile}).RunCommand(strings.Join(args, " "))
-}
-
-func runTaskCmd(cmd *cobra.Command, args []string) {
-	deps, err := resolveDeps(pfile)
-	cobra.CheckErr(err)
-	runner.New(deps, runner.Config{Procfile: pfile}).RunTask(cmd.Use)
-}
-
-func resolveDeps(pfile *procfile.Procfile) (*nix.Nix, error) {
+func resolveDeps(cmd *cobra.Command, args []string) error {
 	rnd := gluey.New()
-	deps := nix.New(pfile)
+
+	deps = nix.New(pfile)
+	if len(pfile.Nixpkgs) == 0 {
+		return nil
+	}
 
 	err := rnd.InFrame("📦 Dependencies", func(c *gluey.Ctx, f *gluey.Frame) error {
 		spinGrp := c.NewSpinGroup()
@@ -156,5 +187,5 @@ https://search.nixos.org/packages
 `)
 	}
 
-	return deps, err
+	return err
 }

@@ -38,10 +38,11 @@ func (nix *Nix) Install(pkg string) error {
 }
 
 // WithShell will create a new command with nix-shell satisfying the deps
-func (nix *Nix) WithShell(ctx context.Context, cmd string) *exec.Cmd {
+func (nix *Nix) WithShell(ctx context.Context, cmd string, keep ...string) *exec.Cmd {
 	args := []string{"<nixpkgs>"}
 	if nix.pfile.Isolated {
-		args = append(args, "--pure")
+		args = append(args, "--pure", "--keep")
+		args = append(args, keep...)
 	}
 	args = append(args, "-p")
 	args = append(args, nix.pkgs...)
@@ -50,10 +51,11 @@ func (nix *Nix) WithShell(ctx context.Context, cmd string) *exec.Cmd {
 }
 
 // WithInteractiveShell will create a new command with nix-shell satisfying the deps
-func (nix *Nix) WithInteractiveShell(ctx context.Context) *exec.Cmd {
+func (nix *Nix) WithInteractiveShell(ctx context.Context, keep ...string) *exec.Cmd {
 	args := []string{"<nixpkgs>"}
 	if nix.pfile.Isolated {
-		args = append(args, "--pure")
+		args = append(args, "--pure", "--keep")
+		args = append(args, keep...)
 	}
 	args = append(args, "-p")
 	args = append(args, nix.pkgs...)

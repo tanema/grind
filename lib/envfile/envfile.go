@@ -43,6 +43,15 @@ func (env *Env) ToArray() []string {
 	return vars
 }
 
+// Keys will output all the keys in the envfile
+func (env *Env) Keys() []string {
+	keys := []string{}
+	for key := range env.vars {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 func (env *Env) loadEnvFile(filename string) error {
 	if filename == "" {
 		return nil

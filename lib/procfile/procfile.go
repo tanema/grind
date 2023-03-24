@@ -47,6 +47,42 @@ type (
 	}
 )
 
+var templateProcfile = &Procfile{
+	Version: "1",
+	Nixpkgs: []string{"nodejs-18_x"},
+	Environment: map[string]any{
+		"DEBUG": 1,
+		"PORT":  8080,
+	},
+	Services: map[string]*Service{
+		"server": {Dir: "server", Cmd: []string{`echo "start server"`}},
+		"client": {Dir: "client", Cmd: []string{`npm init`}},
+	},
+	Tasks: map[string]*Service{
+		"test": {Service: "client", Cmd: []string{`npm test`}},
+	},
+}
+
+// Create will write out a new procfile
+func Create() error {
+	pwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Create(filepath.Join(pwd, "grind.yml"))
+	if err != nil {
+		return err
+	}
+
+	byteData, err := yaml.Marshal(templateProcfile)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(byteData)
+	return err
+}
+
 // Parse will read a procfile and format it validly
 func Parse(dir, filename string, env *envfile.Env) (*Procfile, error) {
 	procfile := &Procfile{
@@ -104,6 +140,23 @@ func (pfile *Procfile) Environ() ([]string, error) {
 	return env, nil
 }
 
+// EnvKeys will collect all the env keys that are set in the procfile. This is
+// used for isolated shells to tell nix-shell to keep those values
+func (pfile *Procfile) EnvKeys() ([]string, error) {
+	keys := pfile.FlagEnv.Keys()
+
+	fileEnv, err := envfile.Parse(pfile.Envfiles...)
+	if err != nil {
+		return nil, err
+	}
+	keys = append(keys, fileEnv.Keys()...)
+
+	for key := range pfile.Environment {
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
 // Environ will generate an array of the variables for a single service, inheriting
 // from the procfile and flag args. If the service is a task and inherits a service,
 // then it will inherit from that service, then procfile, and flag args
@@ -132,4 +185,32 @@ func (svc *Service) Environ() ([]string, error) {
 		env = append(env, fmt.Sprintf("%v=%v", key, val))
 	}
 	return env, nil
+}
+
+// EnvKeys will collect all the env keys that are set for the service. This is
+// used for isolated shells to tell nix-shell to keep those values
+func (svc *Service) EnvKeys() ([]string, error) {
+	keys := []string{}
+	if svc.service != nil {
+		parentEnv, err := svc.service.EnvKeys()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, parentEnv...)
+	} else {
+		parentEnv, err := svc.procfile.EnvKeys()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, parentEnv...)
+	}
+	fileEnv, err := envfile.Parse(svc.Envfiles...)
+	if err != nil {
+		return nil, err
+	}
+	keys = append(keys, fileEnv.Keys()...)
+	for key := range svc.Env {
+		keys = append(keys, key)
+	}
+	return keys, nil
 }

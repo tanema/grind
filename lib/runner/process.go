@@ -24,40 +24,47 @@ func newProc(run *Runner, service *procfile.Service, prefix string) *Process {
 }
 
 // Run will start a single process with before and after hooks for it.
-func (proc *Process) run() {
+func (proc *Process) run() error {
 	defer func() {
 		for _, cmd := range proc.defn.After {
-			proc.exec(cmd)
+			if err := proc.exec(cmd); err != nil {
+				return
+			}
 		}
 	}()
 	for _, cmd := range proc.defn.Before {
-		proc.exec(cmd)
+		if err := proc.exec(cmd); err != nil {
+			return err
+		}
 	}
 	for _, cmd := range proc.defn.Cmd {
-		proc.exec(cmd)
+		if err := proc.exec(cmd); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // runCmd will run a command with the ability to gracefully stop it.
-func (proc *Process) exec(cmd string) {
+func (proc *Process) exec(cmd string) error {
 	proc.stdOut.Printf("🚀 => %v\n", cmd)
+	keep, err := proc.defn.EnvKeys()
+	if err != nil {
+		return err
+	}
 	env, err := proc.defn.Environ()
 	if err != nil {
-		proc.stdErr.Printf("🔥 Error: %v\n", err)
-		return
+		return err
 	}
-	r := proc.runner
-	cmdProc := r.nix.WithShell(r.ctx, cmd)
+	cmdProc := proc.runner.WithShell(cmd, keep...)
 	cmdProc.Dir = proc.defn.Dir
 	cmdProc.Stdout = proc.stdOut
 	cmdProc.Stderr = proc.stdErr
 	cmdProc.Env = env
 	if err := cmdProc.Start(); err != nil {
-		proc.stdErr.Printf("🔥 Error: %v\n", cmd)
+		return err
 	}
 	running[cmdProc.Process.Pid] = cmdProc.Process
 	defer func(pid int) { delete(running, pid) }(cmdProc.Process.Pid)
-	if err := cmdProc.Wait(); err != nil {
-		proc.stdErr.Printf("🔥 Error: %v\n", err)
-	}
+	return cmdProc.Wait()
 }
