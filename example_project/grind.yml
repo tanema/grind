@@ -1,0 +1,94 @@
+version: "1"
+
+services:
+  db:
+    desc: "Mysql database server"
+    dir: db
+    nixpkgs: [mysql]
+    before:
+      - .@db-setup
+    cmds:
+      - mysqld --datadir=./data --socket=mysql.sock
+
+  server:
+    desc: "Backend Go server that connects to DB and serves templates"
+    dir: server
+    nixpkgs: [go]
+    env:
+      PORT: 8081
+    before:
+      - .@server-setup
+    cmds:
+      - go run main.go
+
+  client:
+    desc: "Minimal static frontend using htmx and static file server"
+    dir: client
+    nixpkgs: [nodejs]
+    env:
+      NODE_ENV: "development"
+      PORT: 8080
+    before:
+      - .@client-setup
+    cmds:
+      - npx http-server
+
+tasks:
+  test:
+    desc: "Run js and go tests"
+    cmds:
+      - .@js-test
+      - .@go-test
+
+  js-test:
+    service: client
+    hidden: true
+    cmds:
+      - npm test
+
+  go-test:
+    service: server
+    hidden: true
+    cmds:
+      - go test ./...
+
+  db:
+    service: db
+    desc: "Run mysql queries"
+    cmds:
+      - mysql --socket=${DIR}/db/mysql.sock
+
+  setup:
+    desc: "Ensure all services are ready to run"
+    cmds:
+      - .@db-setup
+      - .@server-setup
+      - .@client-setup
+
+  db-setup:
+    service: db
+    hidden: true
+    desc: "Ensure that the database is ready to run"
+    cmds:
+      - mkdir -p ./data
+      - mysql_install_db --datadir=./data
+
+  server-setup:
+    service: server
+    hidden: true
+    desc: "Ensure that the server has all the required deps"
+    cmds:
+      - go mod tidy
+
+  client-setup:
+    service: client
+    hidden: true
+    desc: "Ensure that the client has all packages installed"
+    cmds:
+      - npm install
+
+  reset:
+    service: db
+    desc: "Reset database"
+    cmds:
+      - rm -rf data

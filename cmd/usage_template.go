@@ -10,7 +10,18 @@ const helpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 {{end}}
 `
 
-const usageTemplate = `{{"Usage:" | bold | bright}} {{"grind [command]" | cyan }}
+const usageTemplate = `{{"Usage:" | bold | bright}}{{if .Cmd.Runnable}}
+  {{.Cmd.UseLine | cyan}}{{end}}{{if .Cmd.HasAvailableSubCommands}}
+  {{.Cmd.CommandPath | cyan}} [command]{{end}}
+
+{{- if (and (not .Cmd.HasParent) .Def)}}
+
+{{"Services:" | bold | bright}} run with {{"grind run" | cyan}}
+{{- range .Def.Services}}
+  {{- if (not .Hidden)}}
+  {{rpad .Name 11 | bold | bright}}{{if .Description}}{{.Description}}{{else}}{{"no description" | faint}}{{end}}
+  {{- end }}{{ end }}
+{{- end }}
 
 {{- if .Cmd.HasAvailableSubCommands}}
 
@@ -30,28 +41,22 @@ const usageTemplate = `{{"Usage:" | bold | bright}} {{"grind [command]" | cyan }
 {{- if .Cmd.HasAvailableInheritedFlags}}
 
 {{"Global Flags:" | bold | bright}}
-{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
+{{.Cmd.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
 {{- end}}
 
 {{- if .Cmd.HasAvailableSubCommands}}
-{{ with .Def}}
-{{- if eq (len .Nixpkgs) 0}}
-Add {{"nixpkgs" | bold}} to your {{"grind.yml" | bold}} to enable the {{"exec" | cyan}} and {{"shell" | cyan}} commands.
-{{- end }}
-{{- else}}
+{{ if not .Def}}
 Run {{"grind init" | cyan}} to start a project
 {{- end}}
 Use {{"grind [command] --help" | bold | bright}} for more information about a command.
 {{- end}}
 `
 
-type UsageInfo struct {
-	Cmd *cobra.Command
-	Def *procfile.Procfile
-}
-
 func usage(c *cobra.Command) error {
-	return term.Println(usageTemplate, UsageInfo{
+	return term.Println(usageTemplate, struct {
+		Cmd *cobra.Command
+		Def *procfile.Procfile
+	}{
 		Cmd: c,
 		Def: pfile,
 	})

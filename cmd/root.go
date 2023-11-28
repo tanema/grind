@@ -3,37 +3,25 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/tanema/gluey"
 
-	"github.com/tanema/grind/lib/envfile"
-	"github.com/tanema/grind/lib/nix"
 	"github.com/tanema/grind/lib/procfile"
 	"github.com/tanema/grind/lib/runner"
+	"github.com/tanema/grind/lib/term"
 )
 
-type Flags struct {
-	Dir    string
-	File   string
-	Env    []string
-	Only   []string
-	Except []string
-}
-
 var (
-	env   *envfile.Env
 	pfile *procfile.Procfile
-	deps  *nix.Nix
-	flags = Flags{
-		File: "grind.yml",
-	}
 
 	rootCmd = &cobra.Command{
 		Version: "0.0.1",
 		Use:     "grind",
-		Short:   "Get on your grind 👑",
+		Long: `Get on your grind 👑
+Run all of your services concurrently within a nix-shell`,
+		PersistentPreRun: ensureNix,
 	}
 	initCmd = &cobra.Command{
 		Use:   "init",
@@ -43,50 +31,45 @@ var (
 		},
 	}
 	runCmd = &cobra.Command{
-		Use:     "run",
-		Short:   "Ensure dependencies are satisfied and start up all specified services.",
-		PreRunE: resolveDeps,
-		Run: func(cmd *cobra.Command, args []string) {
-			runner.New(deps, pfile).RunServices(flags.Only, flags.Except)
+		Use:          "run",
+		Short:        "Run all services in their own nix-shell.",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runner.New(pfile).RunServices(args)
 		},
 	}
 	shellCmd = &cobra.Command{
-		Use:     "shell",
-		Short:   "Start up interactive shell with deps.",
-		PreRunE: resolveDeps,
+		Use:   "shell [service]",
+		Short: "Start up interactive shell with deps.",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runner.New(deps, pfile).RunShell()
+			return runner.New(pfile).RunShell(args[0])
 		},
 	}
 	execCmd = &cobra.Command{
-		Use:     "exec -- [arbitrary shell commands]",
-		Short:   "run a command within the environment",
-		PreRunE: resolveDeps,
+		Use:   "exec [service] -- [arbitrary shell commands]",
+		Short: "run a command within the environment",
+		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runner.New(deps, pfile).RunCommand(strings.Join(args, " "))
+			return runner.New(pfile).RunCommand(args[0], strings.Join(args[1:], " "))
 		},
 	}
 	envCmd = &cobra.Command{
-		Use:     "env",
-		Short:   "Output environment variables for different services.",
-		PreRunE: resolveDeps,
-		Hidden:  true,
+		Use:    "env [service]",
+		Short:  "Output environment variables for different services.",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
 		Run: func(cmd *cobra.Command, args []string) {
-			if len(args) == 0 {
-				env, _ := pfile.Environ()
-				fmt.Println(strings.Join(env, "\n"))
+			var env []string
+			if svc := pfile.Services[args[0]]; svc != nil {
+				env = svc.Environ()
+			} else if task := pfile.Tasks[args[0]]; task != nil {
+				env = task.Environ()
+			} else {
+				fmt.Printf("Uknown service or task %v", args[0])
 				return
 			}
-			name := args[0]
-			if svc := pfile.Services[name]; svc != nil {
-				env, _ := svc.Environ()
-				fmt.Println(strings.Join(env, "\n"))
-			} else if task := pfile.Tasks[name]; task != nil {
-				env, _ := task.Environ()
-				fmt.Println(strings.Join(env, "\n"))
-			} else {
-				fmt.Printf("Uknown service or task %v", name)
-			}
+			fmt.Println(strings.Join(env, "\n"))
 		},
 	}
 )
@@ -99,86 +82,51 @@ func Execute() {
 }
 
 func init() {
+	var err error
+	var file string
+
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 	rootCmd.SetUsageFunc(usage)
 	rootCmd.SetHelpFunc(help)
+	rootCmd.PersistentFlags().StringVarP(&file, "file", "f", "./grind.yml", "Specify a grindfile path to load.")
 
-	pwd, err := os.Getwd()
-	cobra.CheckErr(err)
-	rootCmd.PersistentFlags().StringVarP(&flags.Dir, "root", "d", pwd, "Specify an alternate application root.")
-	rootCmd.PersistentFlags().StringVarP(&flags.File, "file", "f", "grind.yml", "Specify an alternate Procfile to load, implies -d as the root.")
-	rootCmd.PersistentFlags().StringSliceVarP(&flags.Env, "env", "e", nil, "Specify one or more .env files to load")
-
-	runCmd.Flags().StringSliceVarP(&flags.Only, "only", "o", nil, "Specify one or more services to run: --only server,db.")
-	runCmd.Flags().StringSliceVarP(&flags.Except, "except", "x", nil, "Specify one or more services to exclude from run: --except server,db.")
-
-	env, err = envfile.Parse(flags.Env...)
-	cobra.CheckErr(err)
-
-	pfile, err = procfile.Parse(flags.Dir, flags.File, env)
+	pfile, err = procfile.Parse(file)
 	if !os.IsNotExist(err) {
 		cobra.CheckErr(err)
-	}
-
-	if pfile != nil {
-		rootCmd.AddCommand(runCmd)
-		rootCmd.AddCommand(envCmd)
-
-		if len(pfile.Nixpkgs) > 0 {
-			rootCmd.AddCommand(shellCmd)
-			rootCmd.AddCommand(execCmd)
-		}
-
-		for name, task := range pfile.Tasks {
-			addTask(name, task.Description)
-		}
-	} else {
+	} else if pfile == nil {
 		rootCmd.AddCommand(initCmd)
+		return
+	}
+	rootCmd.AddCommand(runCmd, envCmd, shellCmd, execCmd)
+	for name, task := range pfile.Tasks {
+		use := name
+		if task.Usage != "" {
+			use = task.Usage
+		}
+		rootCmd.AddCommand(&cobra.Command{
+			Use:    use,
+			Hidden: task.Hidden,
+			Short:  task.Description,
+			RunE:   runTask(name),
+		})
 	}
 }
 
-func addTask(name, desc string) {
-	rootCmd.AddCommand(&cobra.Command{
-		Use:     name,
-		Short:   desc,
-		PreRunE: resolveDeps,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runner.New(deps, pfile).RunTask(name)
-		},
-	})
+func runTask(taskName string) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		return runner.New(pfile).RunTask(taskName, args)
+	}
 }
 
-func resolveDeps(cmd *cobra.Command, args []string) error {
-	rnd := gluey.New()
-
-	deps = nix.New(pfile)
-	if len(pfile.Nixpkgs) == 0 {
-		return nil
+func ensureNix(cmd *cobra.Command, args []string) {
+	if _, err := exec.LookPath("nix"); err == nil {
+		return
 	}
+	term.Println(`{{"nix" | cyan | bold}} not found on your system. Please run the following command to install it.
 
-	err := rnd.InFrame("📦 Dependencies", func(c *gluey.Ctx, f *gluey.Frame) error {
-		spinGrp := c.NewSpinGroup()
-		for _, pkg := range pfile.Nixpkgs {
-			func(pkg string) {
-				spinGrp.Go(pkg, func(spinner *gluey.Spinner) error {
-					return deps.Install(pkg)
-				})
-			}(pkg)
-		}
-		errs := spinGrp.Wait()
-		rnd.Debreif(errs)
-		if len(errs) > 0 {
-			return fmt.Errorf("could not install all requested packages")
-		}
-		return nil
-	})
+{{"sh <(curl -L https://nixos.org/nix/install) --daemon" | bold}}
 
-	if err != nil {
-		fmt.Printf(`Error installing packages. Please try searching to ensure you have the correct package name:
-
-https://search.nixos.org/packages
-`)
-	}
-
-	return err
+Visit {{"https://nixos.org/download.html" | bold | blue}} to learn more about installing nixos.
+`, nil)
+	os.Exit(1)
 }

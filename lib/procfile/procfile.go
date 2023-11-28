@@ -2,7 +2,6 @@ package procfile
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -14,27 +13,23 @@ import (
 type (
 	// Procfile is the type for the procfile definition
 	Procfile struct {
-		Dir         string                 `yaml:"-"`
-		Filepath    string                 `yaml:"-"`
-		Perms       os.FileMode            `yaml:"-"`
-		Version     string                 `yaml:"version"`
-		Isolated    bool                   `yaml:"isolated,omitempty"`
-		FlagEnv     *envfile.Env           `yaml:"-"`
-		Envfiles    []string               `yaml:"envs,omitempty"`
-		Environment map[string]interface{} `yaml:"env,omitempty"`
-		Nixpkgs     []string               `yaml:"nixpkgs,omitempty"`
-		Services    map[string]*Service    `yaml:"services,omitempty"`
-		Tasks       map[string]*Service    `yaml:"tasks,omitempty"`
-	}
-	// Requirement describes a dependency's version and pinned attribute
-	Requirement struct {
-		From string `yaml:"from,omitempty"`
-		Attr string `yaml:"attr,omitempty"`
+		Dir      string              `yaml:"-"`
+		Filepath string              `yaml:"-"`
+		Version  string              `yaml:"version"`
+		Envfiles []string            `yaml:"envs,omitempty"`
+		Env      map[string]string   `yaml:"env,omitempty"`
+		Nixpkgs  []string            `yaml:"nixpkgs,omitempty"`
+		Services map[string]*Service `yaml:"services,omitempty"`
+		Tasks    map[string]*Service `yaml:"tasks,omitempty"`
 	}
 	// Service is a single process description
 	Service struct {
 		procfile    *Procfile         `yaml:"-"`
+		Hidden      bool              `yaml:"hidden,omitempty"`
 		Name        string            `yaml:"-"`
+		Usage       string            `yaml:"usage,omitempty"`
+		Nixpkgs     []string          `yaml:"nixpkgs,omitempty"`
+		Isolated    bool              `yaml:"isolated,omitempty"`
 		Description string            `yaml:"desc,omitempty"`
 		Service     string            `yaml:"service,omitempty"`
 		service     *Service          `yaml:"-"`
@@ -49,14 +44,10 @@ type (
 
 var templateProcfile = &Procfile{
 	Version: "1",
-	Nixpkgs: []string{"nodejs-18_x"},
-	Environment: map[string]any{
-		"DEBUG": 1,
-		"PORT":  8080,
-	},
+	Env:     map[string]string{"DEBUG": "1"},
 	Services: map[string]*Service{
-		"server": {Dir: "server", Cmd: []string{`echo "start server"`}},
-		"client": {Dir: "client", Cmd: []string{`npm init`}},
+		"server": {Dir: "server", Cmd: []string{`echo "start server"`}, Env: map[string]string{"PORT": "8080"}},
+		"client": {Dir: "client", Cmd: []string{`npm init`}, Nixpkgs: []string{"nodejs-18_x"}},
 	},
 	Tasks: map[string]*Service{
 		"test": {Service: "client", Cmd: []string{`npm test`}},
@@ -84,133 +75,131 @@ func Create() error {
 }
 
 // Parse will read a procfile and format it validly
-func Parse(dir, filename string, env *envfile.Env) (*Procfile, error) {
+func Parse(filename string) (*Procfile, error) {
+	fullPath, err := filepath.Abs(filename)
+	if err != nil {
+		return nil, err
+	}
+
 	procfile := &Procfile{
-		Dir:      dir,
-		Filepath: filepath.Join(dir, filename),
-		FlagEnv:  env,
+		Dir:      filepath.Dir(fullPath),
+		Filepath: fullPath,
 	}
-	info, err := os.Stat(procfile.Filepath)
-	if err != nil {
+
+	if err := procfile.setup(); err != nil {
 		return nil, err
 	}
-	procfile.Perms = info.Mode()
-	byteData, err := ioutil.ReadFile(procfile.Filepath)
-	if err != nil {
-		return nil, err
+
+	for name, svc := range procfile.Services {
+		if err := svc.setup(name, procfile); err != nil {
+			return nil, err
+		}
 	}
-	if err := yaml.UnmarshalStrict(byteData, &procfile); err != nil {
-		return nil, err
-	}
-	for _, svc := range procfile.Services {
-		svc.procfile = procfile
-	}
+
 	for name, task := range procfile.Tasks {
-		task.procfile = procfile
-		if task.Service == "" {
-			continue
+		if err := task.setup(name, procfile); err != nil {
+			return nil, err
 		}
-		task.service = procfile.Services[task.Service]
-		if task.service == nil {
-			return nil, fmt.Errorf("undefined service %v requested in task %v", task.Service, name)
-		}
-		task.Dir = task.service.Dir
 	}
 	return procfile, nil
 }
 
-// Environ will generate an array of the variables for the procfile for all
-// services and inherits the flag args
-func (pfile *Procfile) Environ() ([]string, error) {
-	env := []string{}
-	if !pfile.Isolated {
-		env = append(env, os.Environ()...)
-	}
-	env = append(env, pfile.FlagEnv.ToArray()...)
-
-	fileEnv, err := envfile.Parse(pfile.Envfiles...)
+func (procfile *Procfile) setup() error {
+	byteData, err := os.ReadFile(procfile.Filepath)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	env = append(env, fileEnv.ToArray()...)
-
-	for key, val := range pfile.Environment {
-		env = append(env, fmt.Sprintf("%v=%v", key, val))
+	if err := yaml.UnmarshalStrict(byteData, &procfile); err != nil {
+		return err
 	}
-	return env, nil
-}
-
-// EnvKeys will collect all the env keys that are set in the procfile. This is
-// used for isolated shells to tell nix-shell to keep those values
-func (pfile *Procfile) EnvKeys() ([]string, error) {
-	keys := pfile.FlagEnv.Keys()
-
-	fileEnv, err := envfile.Parse(pfile.Envfiles...)
-	if err != nil {
-		return nil, err
+	if procfile.Version != "1" {
+		return fmt.Errorf("unknown procfile version %v requested", procfile.Version)
 	}
-	keys = append(keys, fileEnv.Keys()...)
-
-	for key := range pfile.Environment {
-		keys = append(keys, key)
+	if procfile.Env == nil {
+		procfile.Env = map[string]string{}
 	}
-	return keys, nil
+	return parseEnvFiles(procfile.Env, nil, procfile.Envfiles...)
 }
 
 // Environ will generate an array of the variables for a single service, inheriting
 // from the procfile and flag args. If the service is a task and inherits a service,
 // then it will inherit from that service, then procfile, and flag args
-func (svc *Service) Environ() ([]string, error) {
+func (svc *Service) Environ() []string {
 	env := []string{}
 	if svc.service != nil {
-		parentEnv, err := svc.service.Environ()
-		if err != nil {
-			return nil, err
-		}
-		env = append(env, parentEnv...)
-	} else {
-		parentEnv, err := svc.procfile.Environ()
-		if err != nil {
-			return nil, err
-		}
-		env = append(env, parentEnv...)
+		env = append(env, svc.service.Environ()...)
 	}
-
-	fileEnv, err := envfile.Parse(svc.Envfiles...)
-	if err != nil {
-		return nil, err
+	if !svc.Isolated {
+		env = append(env, os.Environ()...)
 	}
-	env = append(env, fileEnv.ToArray()...)
 	for key, val := range svc.Env {
-		env = append(env, fmt.Sprintf("%v=%v", key, val))
+		env = append(env, key+"="+val)
 	}
-	return env, nil
+	return env
 }
 
 // EnvKeys will collect all the env keys that are set for the service. This is
 // used for isolated shells to tell nix-shell to keep those values
-func (svc *Service) EnvKeys() ([]string, error) {
+func (svc *Service) EnvKeys() []string {
 	keys := []string{}
 	if svc.service != nil {
-		parentEnv, err := svc.service.EnvKeys()
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, parentEnv...)
-	} else {
-		parentEnv, err := svc.procfile.EnvKeys()
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, parentEnv...)
+		keys = append(keys, svc.service.EnvKeys()...)
 	}
-	fileEnv, err := envfile.Parse(svc.Envfiles...)
-	if err != nil {
-		return nil, err
-	}
-	keys = append(keys, fileEnv.Keys()...)
 	for key := range svc.Env {
 		keys = append(keys, key)
 	}
-	return keys, nil
+	return keys
+}
+
+func (svc *Service) setup(name string, procfile *Procfile) error {
+	svc.Name = name
+	svc.Dir = filepath.Join(procfile.Dir, svc.Dir)
+	svc.Nixpkgs = append(svc.Nixpkgs, procfile.Nixpkgs...)
+	svc.procfile = procfile
+	if svc.Env == nil {
+		svc.Env = map[string]string{}
+	}
+	if err := parseEnvFiles(svc.Env, procfile.Env, svc.Envfiles...); err != nil {
+		return err
+	}
+	if err := svc.inherit(); err != nil {
+		return err
+	}
+	svc.Env["SVC"] = svc.Name
+	svc.Env["TASK"] = svc.Name
+	svc.Env["PWD"] = svc.Dir
+	return nil
+}
+
+func (svc *Service) inherit() error {
+	if svc.Service == "" {
+		return nil
+	} else if svc.procfile.Services[svc.Service] == nil {
+		return fmt.Errorf("%v tried to inherit %v which does not exist", svc.Name, svc.Service)
+	}
+	svc.service = svc.procfile.Services[svc.Service]
+	svc.Nixpkgs = append(svc.Nixpkgs, svc.service.Nixpkgs...)
+	svc.Dir = svc.service.Dir
+	for key, val := range svc.service.Env {
+		svc.Env[key] = val
+	}
+	svc.Env["SVC"] = svc.Service
+	return nil
+}
+
+func parseEnvFiles(env, ext map[string]string, files ...string) error {
+	for key, val := range env {
+		env[key] = os.Expand(val, func(v string) string {
+			if val, ok := env[v]; ok {
+				return val
+			} else if val, ok := ext[v]; ok {
+				return val
+			}
+			return os.Getenv(v)
+		})
+	}
+	for key, val := range ext {
+		env[key] = val
+	}
+	return envfile.Parse(env, files...)
 }

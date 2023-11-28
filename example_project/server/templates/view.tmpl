@@ -1,0 +1,12 @@
+<div hx-target="this" hx-swap="outerHTML">
+    <div><label>First Name</label>: {{.FirstName}}</div>
+    <div><label>Last Name</label>: {{.LastName}}</div>
+    <div><label>Email</label>: {{.Email}}</div>
+
+    <button hx-get="http://localhost:8081/edit" class="btn btn-primary">
+    Click To Edit
+    </button>
+
+    <div><label>Created</label>: {{.CreatedAt.Time}}</div>
+    <div><label>Updated</label>: {{.UpdatedAt.Time}}</div>
+</div>

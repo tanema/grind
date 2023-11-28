@@ -2,33 +2,17 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 
-	"github.com/fatih/color"
 	"golang.org/x/exp/slices"
 
-	"github.com/tanema/grind/lib/nix"
 	"github.com/tanema/grind/lib/procfile"
 )
-
-var logColors = []*color.Color{
-	color.New(color.FgHiYellow),
-	color.New(color.FgHiBlue),
-	color.New(color.FgHiMagenta),
-	color.New(color.FgHiCyan),
-	color.New(color.FgHiWhite),
-	color.New(color.FgYellow),
-	color.New(color.FgBlue),
-	color.New(color.FgMagenta),
-	color.New(color.FgCyan),
-}
-
-var running = map[int]*os.Process{}
 
 type (
 	// Config is configuration for the runner
@@ -39,18 +23,17 @@ type (
 	}
 	// Runner coordinates between many processes
 	Runner struct {
-		procfile  *procfile.Procfile
-		ctx       context.Context
-		cancel    context.CancelFunc
-		nix       *nix.Nix
-		processes map[string]*Process
-		tasks     map[string]*Process
-		sigc      chan os.Signal
+		procfile *procfile.Procfile
+		running  map[int]*exec.Cmd
+		ctx      context.Context
+		cancel   context.CancelFunc
+		sigc     chan os.Signal
+		titleLen int
 	}
 )
 
 // New creates a new runner for a parsed procfile
-func New(deps *nix.Nix, pfile *procfile.Procfile) *Runner {
+func New(pfile *procfile.Procfile) *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	maxTitleLen := 0
@@ -61,43 +44,47 @@ func New(deps *nix.Nix, pfile *procfile.Procfile) *Runner {
 	}
 
 	runner := &Runner{
-		ctx:       ctx,
-		cancel:    cancel,
-		nix:       deps,
-		procfile:  pfile,
-		processes: map[string]*Process{},
-		tasks:     map[string]*Process{},
+		ctx:      ctx,
+		running:  map[int]*exec.Cmd{},
+		cancel:   cancel,
+		procfile: pfile,
+		titleLen: maxTitleLen,
+		sigc:     make(chan os.Signal, 1),
 	}
 
-	colorIndex := 0
-	for name, process := range pfile.Services {
-		prefix := logColors[colorIndex].Sprintf("%*v | ", maxTitleLen, name)
-		runner.processes[name] = newProc(runner, process, prefix)
-		colorIndex = (colorIndex + 1) % len(logColors)
-	}
+	signal.Notify(runner.sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	go func() {
+		<-runner.sigc
+		runner.cancel()
+	}()
 
-	for name, task := range pfile.Tasks {
-		prefix := logColors[colorIndex].Sprintf("%*v | ", maxTitleLen, name)
-		runner.tasks[name] = newProc(runner, task, prefix)
-		colorIndex = (colorIndex + 1) % len(logColors)
-	}
 	return runner
 }
 
 // RunServices will start all of the default services
-func (runner *Runner) RunServices(only, except []string) error {
-	go runner.monitorSignals()
-	var wg sync.WaitGroup
-	var errors = []error{}
-	for name, proc := range runner.processes {
-		if (only != nil && !slices.Contains(only, name)) || slices.Contains(except, name) {
+func (runner *Runner) RunServices(names []string) error {
+	procs := []*Process{}
+	for name, svc := range runner.procfile.Services {
+		if len(names) > 0 && !slices.Contains(names, name) {
 			continue
 		}
+		procs = append(procs, newProc(runner, svc))
+	}
+	if err := runner.spawn(procs, func(proc *Process) error { return proc.before(true, nil) }); err != nil {
+		return err
+	}
+	defer runner.spawn(procs, func(proc *Process) error { return proc.after(true, nil) })
+	return runner.spawn(procs, func(proc *Process) error { return proc.cmd(true, nil) })
+}
 
+func (runner *Runner) spawn(procs []*Process, fn func(*Process) error) error {
+	var wg sync.WaitGroup
+	var errors = []error{}
+	for _, proc := range procs {
 		wg.Add(1)
 		go func(proc *Process) {
 			defer wg.Done()
-			if err := proc.run(); err != nil {
+			if err := fn(proc); err != nil {
 				errors = append(errors, err)
 				runner.cancel()
 			}
@@ -111,78 +98,32 @@ func (runner *Runner) RunServices(only, except []string) error {
 }
 
 // RunTask will start a single task
-func (runner *Runner) RunTask(name string) error {
-	go runner.monitorSignals()
-	return runner.tasks[name].run()
+func (runner *Runner) RunTask(name string, args []string) error {
+	return runner.runTask(name, false, args)
 }
 
-// WithShell will run a command in a nix-shell if there are deps and in the
-// current shell if there are no deps
-func (runner *Runner) WithShell(cmd string, keep ...string) *exec.Cmd {
-	if len(runner.procfile.Nixpkgs) > 0 {
-		return runner.nix.WithShell(runner.ctx, cmd, keep...)
+func (runner *Runner) runTask(name string, capture bool, args []string) error {
+	task, ok := runner.procfile.Tasks[name]
+	if !ok {
+		return fmt.Errorf("undefined task %v", name)
 	}
-	parts := strings.Split(cmd, " ")
-	return exec.CommandContext(runner.ctx, parts[0], parts[1:]...)
+	return newProc(runner, task).run(capture, args)
 }
 
 // RunShell will start an interactive shell with deps
-func (runner *Runner) RunShell() error {
-	keep, err := runner.procfile.EnvKeys()
-	if err != nil {
-		return err
+func (runner *Runner) RunShell(name string) error {
+	svc, ok := runner.procfile.Services[name]
+	if !ok {
+		return fmt.Errorf("undefined service %v", name)
 	}
-	cmdProc := runner.nix.WithInteractiveShell(runner.ctx, keep...)
-	cmdProc.Stdin = os.Stdin
-	cmdProc.Stdout = os.Stdout
-	cmdProc.Stderr = os.Stderr
-	env, err := runner.procfile.Environ()
-	if err != nil {
-		return err
-	}
-	cmdProc.Env = env
-	return cmdProc.Run()
+	return newProc(runner, svc).shell()
 }
 
 // RunCommand will run a command within the nix-shell
-func (runner *Runner) RunCommand(cmd string) error {
-	keep, err := runner.procfile.EnvKeys()
-	if err != nil {
-		return err
+func (runner *Runner) RunCommand(name, cmd string) error {
+	svc, ok := runner.procfile.Services[name]
+	if !ok {
+		return fmt.Errorf("undefined service %v", name)
 	}
-	cmdProc := runner.WithShell(cmd, keep...)
-	cmdProc.Stdin = os.Stdin
-	cmdProc.Stdout = os.Stdout
-	cmdProc.Stderr = os.Stderr
-	env, err := runner.procfile.Environ()
-	if err != nil {
-		return err
-	}
-	cmdProc.Env = env
-	return cmdProc.Run()
-}
-
-func (runner *Runner) monitorSignals() {
-	runner.sigc = make(chan os.Signal, 1)
-	signal.Notify(runner.sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	runner.killAll(<-runner.sigc)
-}
-
-func (runner *Runner) killAll(sig os.Signal) {
-	numProcs := len(running)
-	color.Cyan("Shutting down %v processes...", numProcs)
-	for _, proc := range running {
-		runner.killProc(proc, sig)
-	}
-	runner.cancel()
-	color.Green("Successfully shutdown %v processes", numProcs)
-}
-
-func (runner *Runner) killProc(proc *os.Process, sig os.Signal) {
-	defer func() { delete(running, proc.Pid) }()
-	if err := proc.Signal(sig); err != nil {
-		if err := syscall.Kill(proc.Pid, syscall.SIGKILL); err != nil {
-			proc.Kill()
-		}
-	}
+	return newProc(runner, svc).exec(cmd)
 }
