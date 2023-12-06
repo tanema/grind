@@ -121,7 +121,7 @@ func (proc *Process) cmd(capture bool, args []string) error {
 func (proc *Process) runlist(cmds, args []string, capture bool) error {
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd, ".@") {
-			if err := proc.runner.runTask(strings.TrimPrefix(cmd, ".@"), capture, args); err != nil {
+			if err := proc.runner.RunTask(strings.TrimPrefix(cmd, ".@"), capture, args); err != nil {
 				return err
 			}
 		} else if err := proc.command(cmd, capture, args); err != nil {
@@ -142,6 +142,7 @@ func (proc *Process) shell() error {
 
 func (proc *Process) expandEnv(cmd string, args []string) string {
 	cfg := map[string]string{}
+	cfg["$@"] = strings.Join(args, " ")
 	for i, arg := range args {
 		cfg[fmt.Sprintf("%v", i+1)] = arg
 	}

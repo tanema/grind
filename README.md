@@ -12,6 +12,7 @@ way to run multiple processes at the same time, like foreman.
 - [Requirements](#requirements)
 - [Usage](#usage)
 - [grind.yml Spec](/docs/grind_spec.md)
+- [Running Envs](/docs/running_env.md)
 - [FAQ](#faq)
 
 ### Requirements
@@ -37,3 +38,6 @@ detailed output.
   kill my battery.
 - *Why tho?*: Because I also wanted to automate some things I use nix for and a
   few other tools all into one.
+- *Is this true nix?*: No honestly it is a misuse of nix really. I know this is 
+  not how you're supposed to use it, but I find this a lot more usable and 
+  straight forward.

@@ -6,7 +6,8 @@ services:
     dir: db
     nixpkgs: [mysql]
     before:
-      - .@db-setup
+      - mkdir -p ./data
+      - mysql_install_db --datadir=./data
     cmds:
       - mysqld --datadir=./data --socket=mysql.sock
 
@@ -17,7 +18,7 @@ services:
     env:
       PORT: 8081
     before:
-      - .@server-setup
+      - go mod tidy
     cmds:
       - go run main.go
 
@@ -29,7 +30,7 @@ services:
       NODE_ENV: "development"
       PORT: 8080
     before:
-      - .@client-setup
+      - npm install
     cmds:
       - npx http-server
 
@@ -37,8 +38,8 @@ tasks:
   test:
     desc: "Run js and go tests"
     cmds:
-      - .@js-test
       - .@go-test
+      - .@js-test
 
   js-test:
     service: client
@@ -56,39 +57,10 @@ tasks:
     service: db
     desc: "Run mysql queries"
     cmds:
-      - mysql --socket=${DIR}/db/mysql.sock
+      - mysql --socket=./data/mysql.sock
 
-  setup:
-    desc: "Ensure all services are ready to run"
+  clean:
+    desc: "Clear all build artifacts"
     cmds:
-      - .@db-setup
-      - .@server-setup
-      - .@client-setup
-
-  db-setup:
-    service: db
-    hidden: true
-    desc: "Ensure that the database is ready to run"
-    cmds:
-      - mkdir -p ./data
-      - mysql_install_db --datadir=./data
-
-  server-setup:
-    service: server
-    hidden: true
-    desc: "Ensure that the server has all the required deps"
-    cmds:
-      - go mod tidy
-
-  client-setup:
-    service: client
-    hidden: true
-    desc: "Ensure that the client has all packages installed"
-    cmds:
-      - npm install
-
-  reset:
-    service: db
-    desc: "Reset database"
-    cmds:
-      - rm -rf data
+      - rm -rf ./db/data
+      - rm -rf ./client/node_modules

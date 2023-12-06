@@ -98,16 +98,12 @@ func (runner *Runner) spawn(procs []*Process, fn func(*Process) error) error {
 }
 
 // RunTask will start a single task
-func (runner *Runner) RunTask(name string, args []string) error {
-	return runner.runTask(name, false, args)
-}
-
-func (runner *Runner) runTask(name string, capture bool, args []string) error {
+func (runner *Runner) RunTask(name string, capture bool, args []string) error {
 	task, ok := runner.procfile.Tasks[name]
 	if !ok {
 		return fmt.Errorf("undefined task %v", name)
 	}
-	return newProc(runner, task).run(capture, args)
+	return newProc(runner, task).run(true, args)
 }
 
 // RunShell will start an interactive shell with deps

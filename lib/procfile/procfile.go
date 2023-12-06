@@ -30,6 +30,7 @@ type (
 		Usage       string            `yaml:"usage,omitempty"`
 		Nixpkgs     []string          `yaml:"nixpkgs,omitempty"`
 		Isolated    bool              `yaml:"isolated,omitempty"`
+		IsTask      bool              `yaml:"-"`
 		Description string            `yaml:"desc,omitempty"`
 		Service     string            `yaml:"service,omitempty"`
 		service     *Service          `yaml:"-"`
@@ -60,18 +61,7 @@ func Create() error {
 	if err != nil {
 		return err
 	}
-
-	file, err := os.Create(filepath.Join(pwd, "grind.yml"))
-	if err != nil {
-		return err
-	}
-
-	byteData, err := yaml.Marshal(templateProcfile)
-	if err != nil {
-		return err
-	}
-	_, err = file.Write(byteData)
-	return err
+	return templateProcfile.Write(filepath.Join(pwd, "grind.yml"))
 }
 
 // Parse will read a procfile and format it validly
@@ -100,19 +90,28 @@ func Parse(filename string) (*Procfile, error) {
 		if err := task.setup(name, procfile); err != nil {
 			return nil, err
 		}
+		task.IsTask = true
 	}
 	return procfile, nil
 }
 
+func (procfile *Procfile) Write(path string) error {
+	if file, err := os.Create(path); err != nil {
+		return err
+	} else if byteData, err := yaml.Marshal(procfile); err != nil {
+		return err
+	} else if _, err = file.Write(byteData); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (procfile *Procfile) setup() error {
-	byteData, err := os.ReadFile(procfile.Filepath)
-	if err != nil {
+	if byteData, err := os.ReadFile(procfile.Filepath); err != nil {
 		return err
-	}
-	if err := yaml.UnmarshalStrict(byteData, &procfile); err != nil {
+	} else if err := yaml.UnmarshalStrict(byteData, &procfile); err != nil {
 		return err
-	}
-	if procfile.Version != "1" {
+	} else if procfile.Version != "1" {
 		return fmt.Errorf("unknown procfile version %v requested", procfile.Version)
 	}
 	if procfile.Env == nil {
@@ -126,7 +125,7 @@ func (procfile *Procfile) setup() error {
 // then it will inherit from that service, then procfile, and flag args
 func (svc *Service) Environ() []string {
 	env := []string{}
-	if svc.service != nil {
+	if svc.IsTask {
 		env = append(env, svc.service.Environ()...)
 	}
 	if !svc.Isolated {
@@ -142,7 +141,7 @@ func (svc *Service) Environ() []string {
 // used for isolated shells to tell nix-shell to keep those values
 func (svc *Service) EnvKeys() []string {
 	keys := []string{}
-	if svc.service != nil {
+	if svc.IsTask {
 		keys = append(keys, svc.service.EnvKeys()...)
 	}
 	for key := range svc.Env {
@@ -165,9 +164,12 @@ func (svc *Service) setup(name string, procfile *Procfile) error {
 	if err := svc.inherit(); err != nil {
 		return err
 	}
-	svc.Env["SVC"] = svc.Name
-	svc.Env["TASK"] = svc.Name
-	svc.Env["PWD"] = svc.Dir
+	if svc.IsTask {
+		svc.Env["SVC"] = svc.Service
+		svc.Env["TASK"] = svc.Name
+	} else {
+		svc.Env["SVC"] = svc.Name
+	}
 	return nil
 }
 
@@ -183,7 +185,6 @@ func (svc *Service) inherit() error {
 	for key, val := range svc.service.Env {
 		svc.Env[key] = val
 	}
-	svc.Env["SVC"] = svc.Service
 	return nil
 }
 
